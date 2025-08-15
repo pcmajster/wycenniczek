@@ -1,6 +1,6 @@
 # wycenniczek - Zarządzanie kosztorysem
 
-**wycenniczek** to prosty, konsolowy program napisany w Pythonie, służący do zarządzania kosztorysami zapisanymi w plikach Excel (`.xlsx`). Umożliwia tworzenie, edytowanie, sortowanie i filtrowanie pozycji kosztorysowych, a także przeglądanie i zapisywanie danych z formatowaniem i automatycznymi kopiami zapasowymi. Program jest intuicyjny, obsługuje polskie znaki (np. `m²`, `m³`) i umożliwia nawigację po folderach oraz wczytywanie plików z wiersza poleceń.
+**wycenniczek** to prosty, konsolowy program napisany w Pythonie, służący do zarządzania kosztorysami zapisanymi w plikach Excel (`.xlsx`). Umożliwia tworzenie, edytowanie, sortowanie i filtrowanie pozycji kosztorysowych, a także przeglądanie i zapisywanie danych z formatowaniem i automatycznymi kopiami zapasowymi. Program jest intuicyjny, obsługuje indexy górne (np. `m²`, `m³`) i umożliwia nawigację po folderach oraz wczytywanie plików z wiersza poleceń.
 
 ## Funkcjonalności
 
