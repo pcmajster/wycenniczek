@@ -311,6 +311,57 @@ class CostEstimateManager:
             print(f"Błąd podczas zmiany nazwy pliku: {e}")
             print("Powrót do menu.\n")
 
+    def delete_cost_estimate(self):
+        """Usuwa wybrany plik kosztorysu z bieżącego folderu."""
+        print("\n=== Usuwanie pliku kosztorysu ===")
+        excel_files = self.list_excel_files()
+        if not excel_files:
+            print("  Brak plików do usunięcia.\n")
+            return
+
+        while True:
+            choice = self._get_user_input("\nWpisz numer pliku do usunięcia lub 'q' aby anulować: ")
+            if choice.lower() == 'q':
+                print("Anulowano. Powrót do menu.\n")
+                return
+            try:
+                file_idx = int(choice) - 1
+                if 0 <= file_idx < len(excel_files):
+                    file_to_delete = os.path.abspath(excel_files[file_idx])
+                    file_name = os.path.basename(file_to_delete)
+                    while True:
+                        confirm = self._get_confirmation(f"Czy na pewno chcesz usunąć plik '{file_name}'? [t/n]: ")
+                        if confirm == 't':
+                            try:
+                                os.remove(file_to_delete)
+                                print(f"Plik '{file_name}' usunięty pomyślnie!\n")
+                                if self.filename and os.path.abspath(self.filename) == file_to_delete:
+                                    print("Usunięto aktualnie wczytany kosztorys. Tworzenie nowego kosztorysu.\n")
+                                    self.filename = None
+                                    self.df = pd.DataFrame(columns=["Pozycja", "Ilość", "Jednostka", 
+                                                                   "Cena jednostkowa (PLN)", "Koszt całkowity (PLN)", 
+                                                                   "Kategoria", "Opis"])
+                                    self.is_modified = False
+                                break
+                            except PermissionError:
+                                print(f"Brak uprawnień do usunięcia pliku '{file_name}' lub plik jest w użyciu.")
+                                print("Powrót do menu.\n")
+                                return
+                            except OSError as e:
+                                print(f"Błąd podczas usuwania pliku '{file_name}': {e}")
+                                print("Powrót do menu.\n")
+                                return
+                        elif confirm == 'n' or confirm == 'q':
+                            print("Anulowano. Powrót do menu.\n")
+                            return
+                        else:
+                            print("Proszę wpisać 't' (tak), 'n' (nie) lub 'q' (anuluj).")
+                    break
+                else:
+                    print(f"Nieprawidłowy numer. Wybierz od 1 do {len(excel_files)} lub 'q'.")
+            except ValueError:
+                print("Proszę wpisać poprawną liczbę lub 'q'.")
+
     def select_initial_file(self):
         """Wybiera plik Excel w trybie interaktywnym."""
         excel_files = self.list_excel_files()
@@ -1002,8 +1053,9 @@ class CostEstimateManager:
             print("  10. Utwórz nowy folder")
             print("  11. Przenieś kosztorys do folderu")
             print("  12. Zmień nazwę kosztorysu")
-            print("  13. Wyjdź")
-            choice = self._get_user_input("\nWpisz opcję (1-13): ")
+            print("  13. Usuń plik kosztorysu")
+            print("  14. Wyjdź")
+            choice = self._get_user_input("\nWpisz opcję (1-14): ")
             print()
 
             if choice == "1":
@@ -1031,6 +1083,8 @@ class CostEstimateManager:
             elif choice == "12":
                 self.rename_cost_estimate()
             elif choice == "13":
+                self.delete_cost_estimate()
+            elif choice == "14":
                 if self.is_modified:
                     while True:
                         confirm = self._get_confirmation("Czy na pewno chcesz wyjść bez zapisywania zmian? [t/n]: ")
@@ -1046,7 +1100,7 @@ class CostEstimateManager:
                     print("Zakończenie programu.\n")
                     return
             else:
-                print("Nieprawidłowa opcja. Wybierz od 1 do 13.\n")
+                print("Nieprawidłowa opcja. Wybierz od 1 do 14.\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Wycennik - Zarządzanie kosztorysem")
