@@ -3,6 +3,7 @@ import os
 import glob
 import argparse
 import re
+import shutil
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -23,22 +24,25 @@ class CostEstimateManager:
 
         # Parsowanie ścieżki początkowej
         if initial_path:
-            # Normalizacja ścieżki, aby obsługiwać separatory i spacje
+            # Normalizacja ścieżki
             initial_path = os.path.normpath(initial_path)
-            # Sprawdzenie, czy ścieżka wskazuje na istniejący plik .xlsx (absolutna lub względem bieżącego katalogu)
             test_path = initial_path if os.path.isabs(initial_path) else os.path.join(self.current_dir, initial_path)
+            # Ochrona przed złośliwymi ścieżkami
+            if not os.path.abspath(test_path).startswith(os.path.abspath(self.current_dir)):
+                print(f"Ścieżka {test_path} wykracza poza bieżący katalog. Użycie bieżącego katalogu.")
+                test_path = self.current_dir
             if os.path.isfile(test_path) and test_path.endswith(".xlsx"):
-                self.filename = test_path
+                self.filename = os.path.abspath(test_path)
                 self.current_dir = os.path.dirname(test_path) or self.current_dir
                 try:
                     os.chdir(self.current_dir)
                     self.df = self.load_cost_estimate()
                     print(f"\n=== Witaj w programie Wycennik! ===")
                     print(f"Bieżący folder: {self.current_dir}")
-                    print(f"Kosztorys wczytany z pliku: {self.filename}\n")
+                    print(f"Kosztorys wczytany z pliku: {os.path.basename(self.filename)}\n")
                     self.display_cost_estimate()
                 except Exception as e:
-                    print(f"Błąd podczas wczytywania pliku {self.filename}: {e}")
+                    print(f"Błąd podczas wczytywania pliku {os.path.basename(self.filename)}: {e}")
                     print("Przechodzenie do trybu interaktywnego.\n")
                     self.filename = None
                     self.df = pd.DataFrame(columns=["Pozycja", "Ilość", "Jednostka", "Cena jednostkowa (PLN)", 
@@ -57,40 +61,72 @@ class CostEstimateManager:
                 print(f"Ścieżka {initial_path} nie wskazuje na istniejący plik .xlsx ani katalog.")
                 print(f"Przechodzenie do trybu interaktywnego w bieżącym katalogu: {self.current_dir}\n")
 
-        # Inicjalizacja PromptSession dla obsługi strzałek
+        # Inicjalizacja PromptSession
         self.prompt_session = PromptSession(multiline=False, enable_history_search=True)
-        # Wywołanie trybu interaktywnego tylko jeśli nie wczytano pliku
         if not self.filename:
             self.select_initial_file()
 
     def _get_user_input(self, prompt_message, default=""):
-        """Pobiera dane od użytkownika z obsługą strzałek i historii, z prefilled text."""
-        return self.prompt_session.prompt(prompt_message, default=default)
+        """Pobiera dane od użytkownika z obsługą strzałek i historii."""
+        user_input = self.prompt_session.prompt(prompt_message, default=default)
+        if len(user_input) > 1000:
+            print("Wprowadzony tekst jest za długi (maks. 1000 znaków).")
+            return ""
+        return user_input
 
     def _get_confirmation(self, prompt_message):
-        """Pobiera potwierdzenie (t/n) od użytkownika z użyciem standardowego input."""
+        """Pobiera potwierdzenie (t/n) od użytkownika."""
         return input(prompt_message).lower()
 
     def _validate_float(self, value, error_message):
-        """Waliduje, czy wartość jest liczbą zmiennoprzecinkową."""
+        """Waliduje, czy wartość jest liczbą zmiennoprzecinkową w dopuszczalnym zakresie."""
         try:
-            return float(value)
+            val = float(value)
+            if val < 0:
+                print("Wartość nie może być ujemna.")
+                return None
+            if val > 1_000_000:
+                print("Wartość jest za duża (maks. 1 000 000).")
+                return None
+            return val
         except ValueError:
             print(error_message)
             return None
 
     def _validate_filename(self, filename):
-        """Waliduje nazwę pliku, sprawdzając niedozwolone znaki i rozszerzenie .xlsx."""
+        """Waliduje nazwę pliku."""
         if not filename:
             return False
-        # Niedozwolone znaki w nazwach plików
+        if len(filename) > 255:
+            print("Nazwa pliku jest za długa (maks. 255 znaków).")
+            return False
         invalid_chars = r'[<>:"/\\|?*]'
         if re.search(invalid_chars, filename):
             print(f"Nazwa pliku zawiera niedozwolone znaki: {invalid_chars}")
             return False
+        reserved_names = ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4",
+                         "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2",
+                         "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"]
+        base_name = filename.split(".")[0].upper()
+        if base_name in reserved_names:
+            print(f"Nazwa pliku '{base_name}' jest zarezerwowana przez system.")
+            return False
         if not filename.endswith(".xlsx"):
             filename += ".xlsx"
         return filename
+
+    def _validate_folder_name(self, folder_name):
+        """Waliduje nazwę folderu."""
+        if not folder_name:
+            return False
+        if len(folder_name) > 255:
+            print("Nazwa folderu jest za długa (maks. 255 znaków).")
+            return False
+        invalid_chars = r'[<>:"/\\|?*]'
+        if re.search(invalid_chars, folder_name):
+            print(f"Nazwa folderu zawiera niedozwolone znaki: {invalid_chars}")
+            return False
+        return folder_name
 
     def list_excel_files(self):
         """Wyświetla listę plików .xlsx w bieżącym folderze posortowaną według daty modyfikacji."""
@@ -166,11 +202,10 @@ class CostEstimateManager:
             if folder_name.lower() == 'q':
                 print("Anulowano. Powrót do menu.\n")
                 return
-            if not folder_name.strip():
-                print("Nazwa folderu nie może być pusta.")
+            folder_name = self._validate_folder_name(folder_name.strip())
+            if not folder_name:
                 continue
-            # Normalizacja nazwy folderu
-            folder_path = os.path.join(self.current_dir, folder_name.strip())
+            folder_path = os.path.join(self.current_dir, folder_name)
             try:
                 os.makedirs(folder_path, exist_ok=True)
                 print(f"Utworzono folder: {folder_path}\n")
@@ -180,7 +215,7 @@ class CostEstimateManager:
                 print("Spróbuj ponownie lub wpisz 'q' aby anulować.")
 
     def move_cost_estimate(self):
-        """Przenosi aktualny kosztorys do wybranego folderu z opcją zmiany nazwy."""
+        """Przenosi aktualny kosztorys do wybranego folderu."""
         print("\n=== Przenoszenie kosztorysu ===")
         if not self.filename:
             print("  Brak wczytanego kosztorysu. Najpierw otwórz lub zapisz kosztorys.\n")
@@ -208,38 +243,72 @@ class CostEstimateManager:
             except ValueError:
                 print("Proszę wpisać poprawną liczbę lub 'q'.")
 
-        # Pytanie o nową nazwę pliku
+        source_path = os.path.abspath(self.filename)
+        dest_path = os.path.abspath(os.path.join(dest_dir, os.path.basename(self.filename)))
+
+        if not os.access(dest_dir, os.W_OK):
+            print(f"Brak uprawnień do zapisu w folderze docelowym: {dest_dir}")
+            print("Powrót do menu.\n")
+            return
+
+        if not os.access(source_path, os.R_OK) or not os.access(os.path.dirname(source_path), os.W_OK):
+            print(f"Brak uprawnień do odczytu pliku źródłowego lub usunięcia z folderu: {os.path.dirname(source_path)}")
+            print("Powrót do menu.\n")
+            return
+
+        try:
+            if os.path.exists(dest_path):
+                print(f"Plik '{os.path.basename(self.filename)}' już istnieje w folderze {dest_dir}.")
+                confirm = self._get_confirmation("Czy chcesz nadpisać plik? [t/n]: ")
+                if confirm != 't':
+                    print("Anulowano. Powrót do menu.\n")
+                    return
+            shutil.move(source_path, dest_path)
+            self.filename = dest_path
+            self.current_dir = dest_dir
+            os.chdir(self.current_dir)
+            print(f"Kosztorys przeniesiony do: {os.path.basename(self.filename)}\n")
+        except OSError as e:
+            print(f"Błąd podczas przenoszenia pliku: {e}")
+            print("Powrót do menu.\n")
+
+    def rename_cost_estimate(self):
+        """Zmienia nazwę aktualnego kosztorysu w bieżącym folderze."""
+        print("\n=== Zmiana nazwy kosztorysu ===")
+        if not self.filename:
+            print("  Brak wczytanego kosztorysu. Najpierw otwórz lub zapisz kosztorys.\n")
+            return
+
         default_name = os.path.basename(self.filename)
         while True:
             new_filename = self._get_user_input(
-                f"Podaj nową nazwę pliku (Enter dla '{default_name}', 'q' aby anulować): ",
+                f"Podaj nową nazwę pliku w folderze {self.current_dir} (Enter dla '{default_name}', 'q' aby anulować): ",
                 default=default_name
             )
             if new_filename.lower() == 'q':
                 print("Anulowano. Powrót do menu.\n")
                 return
-            new_filename = self._validate_filename(new_filename.strip() or default_name)
+            if not new_filename.strip() or new_filename == default_name:
+                print("Nazwa pliku nie zmieniona. Powrót do menu.\n")
+                return
+            new_filename = self._validate_filename(new_filename.strip())
             if new_filename:
                 break
-            print("Nazwa pliku nie może być pusta ani zawierać niedozwolonych znaków. Spróbuj ponownie.")
+            print("Spróbuj ponownie.")
 
         try:
-            # Normalizacja ścieżki docelowej
-            dest_path = os.path.join(dest_dir, new_filename)
-            if os.path.exists(dest_path):
-                print(f"Plik '{new_filename}' już istnieje w folderze {dest_dir}.")
+            new_path = os.path.abspath(os.path.join(self.current_dir, new_filename))
+            if os.path.exists(new_path):
+                print(f"Plik '{new_filename}' już istnieje w folderze {self.current_dir}.")
                 confirm = self._get_confirmation("Czy chcesz nadpisać plik? [t/n]: ")
                 if confirm != 't':
                     print("Anulowano. Powrót do menu.\n")
                     return
-            os.rename(self.filename, dest_path)
-            # Aktualizacja self.filename i self.current_dir
-            self.filename = dest_path
-            self.current_dir = dest_dir
-            os.chdir(self.current_dir)
-            print(f"Kosztorys przeniesiony do: {self.filename}\n")
+            os.rename(self.filename, new_path)
+            self.filename = new_path
+            print(f"Nazwa kosztorysu zmieniona na: {os.path.basename(self.filename)}\n")
         except OSError as e:
-            print(f"Błąd podczas przenoszenia pliku: {e}")
+            print(f"Błąd podczas zmiany nazwy pliku: {e}")
             print("Powrót do menu.\n")
 
     def select_initial_file(self):
@@ -271,15 +340,15 @@ class CostEstimateManager:
             try:
                 file_idx = int(choice) - 1
                 if 0 <= file_idx < len(excel_files):
-                    self.filename = excel_files[file_idx]
+                    self.filename = os.path.abspath(excel_files[file_idx])
                     try:
                         self.df = self.load_cost_estimate()
-                        print(f"\nKosztorys wczytany z pliku: {self.filename}\n")
+                        print(f"\nKosztorys wczytany z pliku: {os.path.basename(self.filename)}\n")
                         self.is_modified = False
                         self.display_cost_estimate()
                         return
                     except Exception as e:
-                        print(f"Błąd podczas wczytywania pliku {self.filename}: {e}")
+                        print(f"Błąd podczas wczytywania pliku {os.path.basename(self.filename)}: {e}")
                         print("Tworzenie nowego kosztorysu.\n")
                         self.filename = None
                         self.df = pd.DataFrame(columns=["Pozycja", "Ilość", "Jednostka", "Cena jednostkowa (PLN)", 
@@ -294,21 +363,25 @@ class CostEstimateManager:
     def load_cost_estimate(self):
         """Ładuje kosztorys z pliku lub zgłasza błąd, jeśli plik niepoprawny."""
         if not self.filename or not os.path.exists(self.filename):
-            raise Exception(f"Plik {self.filename} nie istnieje.")
+            raise Exception(f"Plik {os.path.basename(self.filename)} nie istnieje.")
         
         try:
             df = pd.read_excel(self.filename)
             expected_columns = ["Pozycja", "Ilość", "Jednostka", "Cena jednostkowa (PLN)", 
                                "Koszt całkowity (PLN)", "Kategoria", "Opis"]
             if not all(col in df.columns for col in expected_columns):
-                raise Exception(f"Plik {self.filename} nie zawiera wszystkich oczekiwanych kolumn.")
+                raise Exception(f"Plik {os.path.basename(self.filename)} nie zawiera wszystkich oczekiwanych kolumn.")
             df = df[df["Pozycja"] != "RAZEM"]
+            for col in ["Ilość", "Cena jednostkowa (PLN)", "Koszt całkowity (PLN)"]:
+                invalid = df[col].isna() | ~pd.to_numeric(df[col], errors='coerce').notna()
+                if invalid.any():
+                    print(f"Ostrzeżenie: Niepoprawne wartości w kolumnie '{col}' zostały zamienione na 0.")
             df["Ilość"] = pd.to_numeric(df["Ilość"], errors='coerce').fillna(0)
             df["Cena jednostkowa (PLN)"] = pd.to_numeric(df["Cena jednostkowa (PLN)"], errors='coerce').fillna(0)
             df["Koszt całkowity (PLN)"] = pd.to_numeric(df["Koszt całkowity (PLN)"], errors='coerce').fillna(0)
             return df
         except Exception as e:
-            raise Exception(f"Błąd podczas wczytywania pliku {self.filename}: {e}")
+            raise Exception(f"Błąd podczas wczytywania pliku {os.path.basename(self.filename)}: {e}")
 
     def open_cost_estimate(self):
         """Wczytuje kosztorys z pliku Excel po numerze."""
@@ -330,15 +403,15 @@ class CostEstimateManager:
             try:
                 file_idx = int(choice) - 1
                 if 0 <= file_idx < len(excel_files):
-                    self.filename = excel_files[file_idx]
+                    self.filename = os.path.abspath(excel_files[file_idx])
                     try:
                         self.df = self.load_cost_estimate()
-                        print(f"\nKosztorys wczytany z pliku: {self.filename}\n")
+                        print(f"\nKosztorys wczytany z pliku: {os.path.basename(self.filename)}\n")
                         self.is_modified = False
                         self.display_cost_estimate()
                         break
                     except Exception as e:
-                        print(f"Błąd podczas wczytywania pliku {self.filename}: {e}")
+                        print(f"Błąd podczas wczytywania pliku {os.path.basename(self.filename)}: {e}")
                         self.filename = None
                         self.df = pd.DataFrame(columns=["Pozycja", "Ilość", "Jednostka", "Cena jednostkowa (PLN)", 
                                                        "Koszt całkowity (PLN)", "Kategoria", "Opis"])
@@ -368,15 +441,21 @@ class CostEstimateManager:
             if pozycja.lower() == 'q':
                 print("Anulowano. Powrót do menu.\n")
                 return
+            if len(pozycja) > 1000:
+                print("Nazwa pozycji jest za długa (maks. 1000 znaków).")
+                continue
             if pozycja.strip():
                 break
             print("Nazwa pozycji nie może być pusta.")
 
         while True:
-            ilosc_input = self._get_user_input("Ilość ('q' aby anulować): ")
+            ilosc_input = self._get_user_input("Ilość (Enter dla 1, 'q' aby anulować): ", default="1")
             if ilosc_input.lower() == 'q':
                 print("Anulowano. Powrót do menu.\n")
                 return
+            if not ilosc_input:
+                ilosc = 1.0
+                break
             ilosc = self._validate_float(ilosc_input, "Proszę podać poprawną wartość liczbową lub 'q'.")
             if ilosc is not None:
                 break
@@ -391,6 +470,9 @@ class CostEstimateManager:
             if unit_choice.lower() == 'q':
                 print("Anulowano. Powrót do menu.\n")
                 return
+            if len(unit_choice) > 50:
+                print("Jednostka jest za długa (maks. 50 znaków).")
+                continue
             try:
                 unit_idx = int(unit_choice) - 1
                 if 0 <= unit_idx < len(units):
@@ -406,10 +488,13 @@ class CostEstimateManager:
                     print("Proszę wpisać poprawną jednostkę, numer lub 'q'.")
 
         while True:
-            cena_input = self._get_user_input("Cena jednostkowa (PLN) ('q' aby anulować): ")
+            cena_input = self._get_user_input("Cena jednostkowa (PLN) (Enter dla 0, 'q' aby anulować): ", default="0")
             if cena_input.lower() == 'q':
                 print("Anulowano. Powrót do menu.\n")
                 return
+            if not cena_input:
+                cena_jednostkowa = 0.0
+                break
             cena_jednostkowa = self._validate_float(cena_input, "Proszę podać poprawną wartość liczbową lub 'q'.")
             if cena_jednostkowa is not None:
                 break
@@ -433,6 +518,9 @@ class CostEstimateManager:
                 if kategoria.lower() == 'q':
                     print("Anulowano. Powrót do menu.\n")
                     return
+                if len(kategoria) > 1000:
+                    print("Kategoria jest za długa (maks. 1000 znaków).")
+                    continue
                 if kategoria.strip():
                     break
                 else:
@@ -451,6 +539,9 @@ class CostEstimateManager:
         if opis.lower() == 'q':
             print("Anulowano. Powrót do menu.\n")
             return
+        if len(opis) > 1000:
+            print("Opis jest za długi (maks. 1000 znaków).")
+            opis = opis[:1000]
 
         new_row = pd.DataFrame({
             "Pozycja": [pozycja],
@@ -494,6 +585,9 @@ class CostEstimateManager:
         if new_pozycja.lower() == 'q':
             print("Anulowano. Powrót do menu.\n")
             return
+        if len(new_pozycja) > 1000:
+            print("Nazwa pozycji jest za długa (maks. 1000 znaków).")
+            new_pozycja = pozycja
         if not new_pozycja.strip():
             new_pozycja = pozycja
 
@@ -501,9 +595,12 @@ class CostEstimateManager:
         if ilosc_input.lower() == 'q':
             print("Anulowano. Powrót do menu.\n")
             return
-        ilosc = self._validate_float(ilosc_input, "Nieprawidłowa wartość. Pozostawiono dotychczasową ilość.") if ilosc_input != str(self.df.at[pozycja_idx, 'Ilość']) else self.df.at[pozycja_idx, 'Ilość']
-        if ilosc is None:
+        if not ilosc_input:
             ilosc = self.df.at[pozycja_idx, 'Ilość']
+        else:
+            ilosc = self._validate_float(ilosc_input, "Nieprawidłowa wartość. Pozostawiono dotychczasową ilość.")
+            if ilosc is None:
+                ilosc = self.df.at[pozycja_idx, 'Ilość']
 
         units = ["szt", "m²", "godz", "m³", "kg", "l", "m", "t", "kWh"]
         print("\n  Dostępne jednostki:")
@@ -518,6 +615,9 @@ class CostEstimateManager:
             if not unit_choice:
                 jednostka = self.df.at[pozycja_idx, 'Jednostka']
                 break
+            if len(unit_choice) > 50:
+                print("Jednostka jest za długa (maks. 50 znaków).")
+                continue
             try:
                 unit_idx = int(unit_choice) - 1
                 if 0 <= unit_idx < len(units):
@@ -536,9 +636,12 @@ class CostEstimateManager:
         if cena_input.lower() == 'q':
             print("Anulowano. Powrót do menu.\n")
             return
-        cena_jednostkowa = self._validate_float(cena_input, "Nieprawidłowa wartość. Pozostawiono dotychczasową cenę.") if cena_input != str(self.df.at[pozycja_idx, 'Cena jednostkowa (PLN)']) else self.df.at[pozycja_idx, 'Cena jednostkowa (PLN)']
-        if cena_jednostkowa is None:
+        if not cena_input:
             cena_jednostkowa = self.df.at[pozycja_idx, 'Cena jednostkowa (PLN)']
+        else:
+            cena_jednostkowa = self._validate_float(cena_input, "Nieprawidłowa wartość. Pozostawiono dotychczasową cenę.")
+            if cena_jednostkowa is None:
+                cena_jednostkowa = self.df.at[pozycja_idx, 'Cena jednostkowa (PLN)']
 
         koszt_calkowity = ilosc * cena_jednostkowa
 
@@ -558,7 +661,11 @@ class CostEstimateManager:
                 if kategoria_input.lower() == 'q':
                     print("Anulowano. Powrót do menu.\n")
                     return
-                kategoria = kategoria_input if kategoria_input.strip() else self.df.at[pozycja_idx, 'Kategoria']
+                if len(kategoria_input) > 1000:
+                    print("Kategoria jest za długa (maks. 1000 znaków).")
+                    kategoria = self.df.at[pozycja_idx, 'Kategoria']
+                else:
+                    kategoria = kategoria_input if kategoria_input.strip() else self.df.at[pozycja_idx, 'Kategoria']
                 if kategoria.strip():
                     break
                 else:
@@ -577,6 +684,9 @@ class CostEstimateManager:
         if opis.lower() == 'q':
             print("Anulowano. Powrót do menu.\n")
             return
+        if len(opis) > 1000:
+            print("Opis jest za długi (maks. 1000 znaków).")
+            opis = opis[:1000]
 
         self.df.at[pozycja_idx, "Pozycja"] = new_pozycja
         self.df.at[pozycja_idx, "Ilość"] = ilosc
@@ -740,14 +850,20 @@ class CostEstimateManager:
             print("  Kosztorys jest pusty. Nie można zapisać.\n")
             return
 
-        default_name = self.filename if self.filename else "wycennik.xlsx"
-        filename_input = self._get_user_input(f"Podaj nazwę pliku (Enter dla '{default_name}', 'q' aby anulować): ", default=default_name)
+        default_name = os.path.basename(self.filename) if self.filename else "wycennik.xlsx"
+        prompt_message = f"Podaj nazwę pliku w folderze {self.current_dir} (Enter dla '{default_name}', 'q' aby anulować): "
+        filename_input = self._get_user_input(prompt_message, default=default_name)
+        
         if filename_input.lower() == 'q':
             print("Anulowano. Powrót do menu.\n")
             return
+        if not filename_input:
+            filename_input = default_name
         
-        if not filename_input.endswith(".xlsx"):
-            filename_input += ".xlsx"
+        filename_input = self._validate_filename(filename_input)
+        if not filename_input:
+            print("Anulowano. Powrót do menu.\n")
+            return
         
         while True:
             confirm = self._get_confirmation(f"Czy na pewno chcesz zapisać kosztorys do '{filename_input}'? [t/n]: ")
@@ -759,9 +875,9 @@ class CostEstimateManager:
             else:
                 print("Proszę wpisać 't' (tak), 'n' (nie) lub 'q' (anuluj).")
         
-        self.filename = filename_input
+        self.filename = os.path.abspath(os.path.join(self.current_dir, filename_input))
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_filename = f"backup_{timestamp}_{os.path.basename(self.filename)}"
+        backup_filename = os.path.join(self.current_dir, f"backup_{timestamp}_{os.path.basename(self.filename)}")
         
         total_cost = self.df["Koszt całkowity (PLN)"].sum()
         summary_row = pd.DataFrame({
@@ -775,7 +891,17 @@ class CostEstimateManager:
         })
         df_to_save = pd.concat([self.df, summary_row], ignore_index=True)
         
-        df_to_save.to_excel(self.filename, index=False)
+        try:
+            df_to_save.to_excel(self.filename, index=False)
+        except PermissionError:
+            print(f"Brak uprawnień do zapisu pliku: {os.path.basename(self.filename)}")
+            return
+        except OSError as e:
+            if e.errno == 28:  # errno.ENOSPC - brak miejsca na urządzeniu
+                print("Brak miejsca na dysku. Nie można zapisać pliku.")
+            else:
+                print(f"Błąd podczas zapisu pliku: {e}")
+            return
         
         wb = load_workbook(self.filename)
         ws = wb.active
@@ -820,41 +946,44 @@ class CostEstimateManager:
         wb.save(self.filename)
         
         if os.path.exists(self.filename) and os.path.getsize(self.filename) > 0:
-            df_to_save.to_excel(backup_filename, index=False)
-            wb_backup = load_workbook(backup_filename)
-            ws_backup = wb_backup.active
-            
-            for col_idx, column in enumerate(df_to_save.columns, 1):
-                cell = ws_backup.cell(row=1, column=col_idx)
-                cell.font = header_font
-                cell.fill = header_fill
-                cell.border = border
-            for row_idx in range(2, ws_backup.max_row + 1):
-                for col_idx in range(1, ws_backup.max_column + 1):
-                    cell = ws_backup.cell(row=row_idx, column=col_idx)
+            try:
+                df_to_save.to_excel(backup_filename, index=False)
+                wb_backup = load_workbook(backup_filename)
+                ws_backup = wb_backup.active
+                
+                for col_idx, column in enumerate(df_to_save.columns, 1):
+                    cell = ws_backup.cell(row=1, column=col_idx)
+                    cell.font = header_font
+                    cell.fill = header_fill
                     cell.border = border
-                    if col_idx in [2, 3, 4, 5]:
-                        cell.alignment = center_align
-                        if col_idx in [2, 4, 5]:
-                            cell.number_format = '#,##0.00'
-                    else:
-                        cell.alignment = left_align
-                    if row_idx == ws_backup.max_row:
-                        cell.font = total_font
-            for col_idx, column in enumerate(df_to_save.columns, 1):
-                max_length = max(len(str(column)), 10)
-                for value in df_to_save[column]:
-                    try:
-                        max_length = max(max_length, len(str(value)))
-                    except:
-                        pass
-                adjusted_width = max_length * 1.2
-                ws_backup.column_dimensions[get_column_letter(col_idx)].width = max(adjusted_width, 10)
-            wb_backup.save(backup_filename)
-            print(f"Utworzono kopię zapasową: {backup_filename}")
+                for row_idx in range(2, ws_backup.max_row + 1):
+                    for col_idx in range(1, ws_backup.max_column + 1):
+                        cell = ws_backup.cell(row=row_idx, column=col_idx)
+                        cell.border = border
+                        if col_idx in [2, 3, 4, 5]:
+                            cell.alignment = center_align
+                            if col_idx in [2, 4, 5]:
+                                cell.number_format = '#,##0.00'
+                        else:
+                            cell.alignment = left_align
+                        if row_idx == ws_backup.max_row:
+                            cell.font = total_font
+                for col_idx, column in enumerate(df_to_save.columns, 1):
+                    max_length = max(len(str(column)), 10)
+                    for value in df_to_save[column]:
+                        try:
+                            max_length = max(max_length, len(str(value)))
+                        except:
+                            pass
+                    adjusted_width = max_length * 1.2
+                    ws_backup.column_dimensions[get_column_letter(col_idx)].width = max(adjusted_width, 10)
+                wb_backup.save(backup_filename)
+                print(f"Utworzono kopię zapasową: {os.path.basename(backup_filename)}")
+            except Exception as e:
+                print(f"Błąd podczas tworzenia kopii zapasowej: {e}")
         
         self.is_modified = False
-        print(f"Kosztorys zapisany do: {self.filename}\n")
+        print(f"Kosztorys zapisany do: {os.path.basename(self.filename)}\n")
 
     def run(self):
         """Główna pętla programu z menu głównym."""
@@ -872,8 +1001,9 @@ class CostEstimateManager:
             print("  9. Zmień folder")
             print("  10. Utwórz nowy folder")
             print("  11. Przenieś kosztorys do folderu")
-            print("  12. Wyjdź")
-            choice = self._get_user_input("\nWpisz opcję (1-12): ")
+            print("  12. Zmień nazwę kosztorysu")
+            print("  13. Wyjdź")
+            choice = self._get_user_input("\nWpisz opcję (1-13): ")
             print()
 
             if choice == "1":
@@ -899,6 +1029,8 @@ class CostEstimateManager:
             elif choice == "11":
                 self.move_cost_estimate()
             elif choice == "12":
+                self.rename_cost_estimate()
+            elif choice == "13":
                 if self.is_modified:
                     while True:
                         confirm = self._get_confirmation("Czy na pewno chcesz wyjść bez zapisywania zmian? [t/n]: ")
@@ -914,7 +1046,7 @@ class CostEstimateManager:
                     print("Zakończenie programu.\n")
                     return
             else:
-                print("Nieprawidłowa opcja. Wybierz od 1 do 12.\n")
+                print("Nieprawidłowa opcja. Wybierz od 1 do 13.\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Wycennik - Zarządzanie kosztorysem")
