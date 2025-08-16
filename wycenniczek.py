@@ -2,6 +2,7 @@ import pandas as pd
 import os
 import glob
 import argparse
+import re
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -78,6 +79,19 @@ class CostEstimateManager:
             print(error_message)
             return None
 
+    def _validate_filename(self, filename):
+        """Waliduje nazwę pliku, sprawdzając niedozwolone znaki i rozszerzenie .xlsx."""
+        if not filename:
+            return False
+        # Niedozwolone znaki w nazwach plików
+        invalid_chars = r'[<>:"/\\|?*]'
+        if re.search(invalid_chars, filename):
+            print(f"Nazwa pliku zawiera niedozwolone znaki: {invalid_chars}")
+            return False
+        if not filename.endswith(".xlsx"):
+            filename += ".xlsx"
+        return filename
+
     def list_excel_files(self):
         """Wyświetla listę plików .xlsx w bieżącym folderze posortowaną według daty modyfikacji."""
         excel_files = [f for f in glob.glob(os.path.join(self.current_dir, "*.xlsx")) if os.path.isfile(f)]
@@ -143,6 +157,90 @@ class CostEstimateManager:
                     print(f"Nieprawidłowy numer. Wybierz od 1 do {len(dir_list)} lub 'q'.")
             except ValueError:
                 print("Proszę wpisać poprawną liczbę lub 'q'.")
+
+    def create_directory(self):
+        """Tworzy nowy katalog w bieżącym folderze."""
+        print("\n=== Tworzenie nowego folderu ===")
+        while True:
+            folder_name = self._get_user_input("Podaj nazwę nowego folderu ('q' aby anulować): ")
+            if folder_name.lower() == 'q':
+                print("Anulowano. Powrót do menu.\n")
+                return
+            if not folder_name.strip():
+                print("Nazwa folderu nie może być pusta.")
+                continue
+            # Normalizacja nazwy folderu
+            folder_path = os.path.join(self.current_dir, folder_name.strip())
+            try:
+                os.makedirs(folder_path, exist_ok=True)
+                print(f"Utworzono folder: {folder_path}\n")
+                break
+            except OSError as e:
+                print(f"Błąd podczas tworzenia folderu '{folder_name}': {e}")
+                print("Spróbuj ponownie lub wpisz 'q' aby anulować.")
+
+    def move_cost_estimate(self):
+        """Przenosi aktualny kosztorys do wybranego folderu z opcją zmiany nazwy."""
+        print("\n=== Przenoszenie kosztorysu ===")
+        if not self.filename:
+            print("  Brak wczytanego kosztorysu. Najpierw otwórz lub zapisz kosztorys.\n")
+            return
+
+        dir_list = self.list_directories()
+        if not dir_list:
+            print("  Brak folderów do wyboru. Utwórz folder lub zmień bieżący katalog.\n")
+            return
+
+        while True:
+            choice = self._get_user_input("Wpisz numer folderu docelowego lub 'q' aby anulować: ")
+            if choice.lower() == 'q':
+                print("Anulowano. Powrót do menu.\n")
+                return
+            try:
+                dir_idx = int(choice) - 1
+                if 0 <= dir_idx < len(dir_list):
+                    dest_dir = dir_list[dir_idx]
+                    if dest_dir == "..":
+                        dest_dir = os.path.dirname(self.current_dir)
+                    break
+                else:
+                    print(f"Nieprawidłowy numer. Wybierz od 1 do {len(dir_list)} lub 'q'.")
+            except ValueError:
+                print("Proszę wpisać poprawną liczbę lub 'q'.")
+
+        # Pytanie o nową nazwę pliku
+        default_name = os.path.basename(self.filename)
+        while True:
+            new_filename = self._get_user_input(
+                f"Podaj nową nazwę pliku (Enter dla '{default_name}', 'q' aby anulować): ",
+                default=default_name
+            )
+            if new_filename.lower() == 'q':
+                print("Anulowano. Powrót do menu.\n")
+                return
+            new_filename = self._validate_filename(new_filename.strip() or default_name)
+            if new_filename:
+                break
+            print("Nazwa pliku nie może być pusta ani zawierać niedozwolonych znaków. Spróbuj ponownie.")
+
+        try:
+            # Normalizacja ścieżki docelowej
+            dest_path = os.path.join(dest_dir, new_filename)
+            if os.path.exists(dest_path):
+                print(f"Plik '{new_filename}' już istnieje w folderze {dest_dir}.")
+                confirm = self._get_confirmation("Czy chcesz nadpisać plik? [t/n]: ")
+                if confirm != 't':
+                    print("Anulowano. Powrót do menu.\n")
+                    return
+            os.rename(self.filename, dest_path)
+            # Aktualizacja self.filename i self.current_dir
+            self.filename = dest_path
+            self.current_dir = dest_dir
+            os.chdir(self.current_dir)
+            print(f"Kosztorys przeniesiony do: {self.filename}\n")
+        except OSError as e:
+            print(f"Błąd podczas przenoszenia pliku: {e}")
+            print("Powrót do menu.\n")
 
     def select_initial_file(self):
         """Wybiera plik Excel w trybie interaktywnym."""
@@ -772,8 +870,10 @@ class CostEstimateManager:
             print("  7. Filtruj kosztorys")
             print("  8. Zapisz kosztorys")
             print("  9. Zmień folder")
-            print("  10. Wyjdź")
-            choice = self._get_user_input("\nWpisz opcję (1-10): ")
+            print("  10. Utwórz nowy folder")
+            print("  11. Przenieś kosztorys do folderu")
+            print("  12. Wyjdź")
+            choice = self._get_user_input("\nWpisz opcję (1-12): ")
             print()
 
             if choice == "1":
@@ -795,6 +895,10 @@ class CostEstimateManager:
             elif choice == "9":
                 self.change_directory()
             elif choice == "10":
+                self.create_directory()
+            elif choice == "11":
+                self.move_cost_estimate()
+            elif choice == "12":
                 if self.is_modified:
                     while True:
                         confirm = self._get_confirmation("Czy na pewno chcesz wyjść bez zapisywania zmian? [t/n]: ")
@@ -810,7 +914,7 @@ class CostEstimateManager:
                     print("Zakończenie programu.\n")
                     return
             else:
-                print("Nieprawidłowa opcja. Wybierz od 1 do 10.\n")
+                print("Nieprawidłowa opcja. Wybierz od 1 do 12.\n")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Wycennik - Zarządzanie kosztorysem")
