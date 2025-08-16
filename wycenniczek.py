@@ -29,7 +29,7 @@ class CostEstimateManager:
             test_path = initial_path if os.path.isabs(initial_path) else os.path.join(self.current_dir, initial_path)
             # Ochrona przed złośliwymi ścieżkami
             if not os.path.abspath(test_path).startswith(os.path.abspath(self.current_dir)):
-                print(f"Ścieżka {test_path} wykracza poza bieżący katalog. Użycie bieżącego katalogu.")
+                print(f"Ścieżka '{test_path}' wykracza poza bieżący katalog. Użycie bieżącego katalogu.")
                 test_path = self.current_dir
             if os.path.isfile(test_path) and test_path.endswith(".xlsx"):
                 self.filename = os.path.abspath(test_path)
@@ -58,7 +58,7 @@ class CostEstimateManager:
                     print(f"Błąd podczas zmiany katalogu na {test_path}: {e}")
                     print(f"Przechodzenie do trybu interaktywnego w bieżącym katalogu: {self.current_dir}\n")
             else:
-                print(f"Ścieżka {initial_path} nie wskazuje na istniejący plik .xlsx ani katalog.")
+                print(f"Ścieżka '{initial_path}' nie wskazuje na istniejący plik .xlsx ani katalog.")
                 print(f"Przechodzenie do trybu interaktywnego w bieżącym katalogu: {self.current_dir}\n")
 
         # Inicjalizacja PromptSession
@@ -66,11 +66,15 @@ class CostEstimateManager:
         if not self.filename:
             self.select_initial_file()
 
-    def _get_user_input(self, prompt_message, default=""):
-        """Pobiera dane od użytkownika z obsługą strzałek i historii."""
+    def _get_user_input(self, prompt_message, default="", is_filename=False):
+        """Pobiera dane od użytkownika z obsługą strzałek i historii, z sanitizacją."""
         user_input = self.prompt_session.prompt(prompt_message, default=default)
-        if len(user_input) > 1000:
-            print("Wprowadzony tekst jest za długi (maks. 1000 znaków).")
+        # Sanitizacja: usuwanie znaków sterujących
+        user_input = re.sub(r'[\n\r\t\0]', '', user_input)
+        # Ograniczenie długości
+        max_length = 255 if is_filename else 1000
+        if len(user_input) > max_length:
+            print(f"Wprowadzony tekst jest za długi (maks. {max_length} znaków).")
             return ""
         return user_input
 
@@ -97,13 +101,22 @@ class CostEstimateManager:
         """Waliduje nazwę pliku."""
         if not filename:
             return False
+        # Usuwanie znaków sterujących
+        filename = re.sub(r'[\n\r\t\0]', '', filename)
+        # Sprawdzanie długości
         if len(filename) > 255:
             print("Nazwa pliku jest za długa (maks. 255 znaków).")
             return False
+        # Sprawdzanie niedozwolonych znaków
         invalid_chars = r'[<>:"/\\|?*]'
         if re.search(invalid_chars, filename):
             print(f"Nazwa pliku zawiera niedozwolone znaki: {invalid_chars}")
             return False
+        # Sprawdzanie sekwencji '..'
+        if '..' in filename:
+            print("Nazwa pliku nie może zawierać sekwencji '..'.")
+            return False
+        # Sprawdzanie zarezerwowanych nazw
         reserved_names = ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4",
                          "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2",
                          "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"]
@@ -111,6 +124,7 @@ class CostEstimateManager:
         if base_name in reserved_names:
             print(f"Nazwa pliku '{base_name}' jest zarezerwowana przez system.")
             return False
+        # Dodawanie rozszerzenia .xlsx, jeśli brak
         if not filename.endswith(".xlsx"):
             filename += ".xlsx"
         return filename
@@ -119,12 +133,20 @@ class CostEstimateManager:
         """Waliduje nazwę folderu."""
         if not folder_name:
             return False
+        # Usuwanie znaków sterujących
+        folder_name = re.sub(r'[\n\r\t\0]', '', folder_name)
+        # Sprawdzanie długości
         if len(folder_name) > 255:
             print("Nazwa folderu jest za długa (maks. 255 znaków).")
             return False
+        # Sprawdzanie niedozwolonych znaków
         invalid_chars = r'[<>:"/\\|?*]'
         if re.search(invalid_chars, folder_name):
             print(f"Nazwa folderu zawiera niedozwolone znaki: {invalid_chars}")
+            return False
+        # Sprawdzanie sekwencji '..'
+        if '..' in folder_name:
+            print("Nazwa folderu nie może zawierać sekwencji '..'.")
             return False
         return folder_name
 
@@ -177,6 +199,11 @@ class CostEstimateManager:
                     new_dir = dir_list[dir_idx]
                     if new_dir == "..":
                         new_dir = os.path.dirname(self.current_dir)
+                    # Normalizacja i sprawdzanie ścieżki
+                    new_dir = os.path.abspath(os.path.normpath(new_dir))
+                    if not new_dir.startswith(os.path.abspath(self.current_dir)):
+                        print(f"Ścieżka '{new_dir}' wykracza poza bieżący katalog.")
+                        continue
                     try:
                         os.chdir(new_dir)
                         self.current_dir = os.getcwd()
@@ -198,14 +225,17 @@ class CostEstimateManager:
         """Tworzy nowy katalog w bieżącym folderze."""
         print("\n=== Tworzenie nowego folderu ===")
         while True:
-            folder_name = self._get_user_input("Podaj nazwę nowego folderu ('q' aby anulować): ")
+            folder_name = self._get_user_input("Podaj nazwę nowego folderu ('q' aby anulować): ", is_filename=True)
             if folder_name.lower() == 'q':
                 print("Anulowano. Powrót do menu.\n")
                 return
             folder_name = self._validate_folder_name(folder_name.strip())
             if not folder_name:
                 continue
-            folder_path = os.path.join(self.current_dir, folder_name)
+            folder_path = os.path.abspath(os.path.normpath(os.path.join(self.current_dir, folder_name)))
+            if not folder_path.startswith(os.path.abspath(self.current_dir)):
+                print(f"Nazwa folderu '{folder_name}' wykracza poza bieżący katalog.")
+                continue
             try:
                 os.makedirs(folder_path, exist_ok=True)
                 print(f"Utworzono folder: {folder_path}\n")
@@ -237,14 +267,23 @@ class CostEstimateManager:
                     dest_dir = dir_list[dir_idx]
                     if dest_dir == "..":
                         dest_dir = os.path.dirname(self.current_dir)
+                    # Normalizacja i sprawdzanie ścieżki
+                    dest_dir = os.path.abspath(os.path.normpath(dest_dir))
+                    if not dest_dir.startswith(os.path.abspath(self.current_dir)):
+                        print(f"Ścieżka '{dest_dir}' wykracza poza bieżący katalog.")
+                        continue
                     break
                 else:
                     print(f"Nieprawidłowy numer. Wybierz od 1 do {len(dir_list)} lub 'q'.")
             except ValueError:
                 print("Proszę wpisać poprawną liczbę lub 'q'.")
 
-        source_path = os.path.abspath(self.filename)
-        dest_path = os.path.abspath(os.path.join(dest_dir, os.path.basename(self.filename)))
+        source_path = os.path.abspath(os.path.normpath(self.filename))
+        dest_path = os.path.abspath(os.path.normpath(os.path.join(dest_dir, os.path.basename(self.filename))))
+
+        if not dest_path.startswith(os.path.abspath(self.current_dir)):
+            print(f"Ścieżka docelowa '{dest_path}' wykracza poza bieżący katalog.")
+            return
 
         if not os.access(dest_dir, os.W_OK):
             print(f"Brak uprawnień do zapisu w folderze docelowym: {dest_dir}")
@@ -283,7 +322,7 @@ class CostEstimateManager:
         while True:
             new_filename = self._get_user_input(
                 f"Podaj nową nazwę pliku w folderze {self.current_dir} (Enter dla '{default_name}', 'q' aby anulować): ",
-                default=default_name
+                default=default_name, is_filename=True
             )
             if new_filename.lower() == 'q':
                 print("Anulowano. Powrót do menu.\n")
@@ -296,8 +335,12 @@ class CostEstimateManager:
                 break
             print("Spróbuj ponownie.")
 
+        new_path = os.path.abspath(os.path.normpath(os.path.join(self.current_dir, new_filename)))
+        if not new_path.startswith(os.path.abspath(self.current_dir)):
+            print(f"Nowa nazwa pliku '{new_filename}' wykracza poza bieżący katalog.")
+            return
+
         try:
-            new_path = os.path.abspath(os.path.join(self.current_dir, new_filename))
             if os.path.exists(new_path):
                 print(f"Plik '{new_filename}' już istnieje w folderze {self.current_dir}.")
                 confirm = self._get_confirmation("Czy chcesz nadpisać plik? [t/n]: ")
@@ -327,7 +370,12 @@ class CostEstimateManager:
             try:
                 file_idx = int(choice) - 1
                 if 0 <= file_idx < len(excel_files):
-                    file_to_delete = os.path.abspath(excel_files[file_idx])
+                    file_to_delete = os.path.abspath(os.path.normpath(excel_files[file_idx]))
+                    # Sprawdzanie, czy plik jest w bieżącym katalogu
+                    if not file_to_delete.startswith(os.path.abspath(self.current_dir)):
+                        print(f"Plik '{os.path.basename(file_to_delete)}' znajduje się poza bieżącym katalogiem.")
+                        print("Powrót do menu.\n")
+                        return
                     file_name = os.path.basename(file_to_delete)
                     while True:
                         confirm = self._get_confirmation(f"Czy na pewno chcesz usunąć plik '{file_name}'? [t/n]: ")
@@ -391,7 +439,10 @@ class CostEstimateManager:
             try:
                 file_idx = int(choice) - 1
                 if 0 <= file_idx < len(excel_files):
-                    self.filename = os.path.abspath(excel_files[file_idx])
+                    self.filename = os.path.abspath(os.path.normpath(excel_files[file_idx]))
+                    if not self.filename.startswith(os.path.abspath(self.current_dir)):
+                        print(f"Plik '{os.path.basename(self.filename)}' znajduje się poza bieżącym katalogiem.")
+                        continue
                     try:
                         self.df = self.load_cost_estimate()
                         print(f"\nKosztorys wczytany z pliku: {os.path.basename(self.filename)}\n")
@@ -454,7 +505,10 @@ class CostEstimateManager:
             try:
                 file_idx = int(choice) - 1
                 if 0 <= file_idx < len(excel_files):
-                    self.filename = os.path.abspath(excel_files[file_idx])
+                    self.filename = os.path.abspath(os.path.normpath(excel_files[file_idx]))
+                    if not self.filename.startswith(os.path.abspath(self.current_dir)):
+                        print(f"Plik '{os.path.basename(self.filename)}' znajduje się poza bieżącym katalogiem.")
+                        continue
                     try:
                         self.df = self.load_cost_estimate()
                         print(f"\nKosztorys wczytany z pliku: {os.path.basename(self.filename)}\n")
@@ -903,7 +957,7 @@ class CostEstimateManager:
 
         default_name = os.path.basename(self.filename) if self.filename else "wycennik.xlsx"
         prompt_message = f"Podaj nazwę pliku w folderze {self.current_dir} (Enter dla '{default_name}', 'q' aby anulować): "
-        filename_input = self._get_user_input(prompt_message, default=default_name)
+        filename_input = self._get_user_input(prompt_message, default=default_name, is_filename=True)
         
         if filename_input.lower() == 'q':
             print("Anulowano. Powrót do menu.\n")
@@ -916,6 +970,11 @@ class CostEstimateManager:
             print("Anulowano. Powrót do menu.\n")
             return
         
+        self.filename = os.path.abspath(os.path.normpath(os.path.join(self.current_dir, filename_input)))
+        if not self.filename.startswith(os.path.abspath(self.current_dir)):
+            print(f"Nazwa pliku '{filename_input}' wykracza poza bieżący katalog.")
+            return
+        
         while True:
             confirm = self._get_confirmation(f"Czy na pewno chcesz zapisać kosztorys do '{filename_input}'? [t/n]: ")
             if confirm == 't':
@@ -926,7 +985,6 @@ class CostEstimateManager:
             else:
                 print("Proszę wpisać 't' (tak), 'n' (nie) lub 'q' (anuluj).")
         
-        self.filename = os.path.abspath(os.path.join(self.current_dir, filename_input))
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_filename = os.path.join(self.current_dir, f"backup_{timestamp}_{os.path.basename(self.filename)}")
         
